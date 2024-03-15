@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::File,
     io::{Read, Write},
     net::TcpStream,
@@ -13,7 +13,9 @@ struct Client {
     client: TcpStream,
     exchange: reqwest::blocking::Client,
     handle: u32,
-    msgs: HashMap<u32, Option<String>>,
+
+    calls: HashSet<u32>,
+    responses: HashMap<u32, String>,
 }
 
 impl Client {
@@ -26,7 +28,8 @@ impl Client {
                 .build()
                 .unwrap(),
             handle: 0x80000000,
-            msgs: HashMap::new(),
+            calls: HashSet::new(),
+            responses: HashMap::new(),
         };
         let len = client.read_u32();
         let hello = client.read_msg(len);
@@ -80,11 +83,11 @@ impl Client {
         self.write_u32(handle);
         self.client.write_all(msg.as_bytes()).unwrap();
 
+        self.calls.insert(handle);
         let msg = loop {
-            self.msgs.insert(handle, None);
             self.await_messages();
 
-            if let Some(msg) = self.msgs.remove(&handle).unwrap() {
+            if let Some(msg) = self.responses.remove(&handle) {
                 break msg;
             }
         };
@@ -105,8 +108,8 @@ impl Client {
             let msg = self.read_msg(len);
 
             // were we expecting a response for this handle?
-            if self.msgs.remove(&handle).is_some() {
-                self.msgs.insert(handle, Some(msg));
+            if self.calls.remove(&handle) {
+                self.responses.insert(handle, msg);
                 return;
             }
 
