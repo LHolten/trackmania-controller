@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs::File,
     io::{Read, Write},
     net::TcpStream,
@@ -12,6 +13,7 @@ struct Client {
     client: TcpStream,
     exchange: reqwest::blocking::Client,
     handle: u32,
+    msgs: HashMap<u32, Option<String>>,
 }
 
 impl Client {
@@ -24,6 +26,7 @@ impl Client {
                 .build()
                 .unwrap(),
             handle: 0x80000000,
+            msgs: HashMap::new(),
         };
         let len = client.read_u32();
         let hello = client.read_msg(len);
@@ -78,14 +81,12 @@ impl Client {
         self.client.write_all(msg.as_bytes()).unwrap();
 
         let msg = loop {
-            let len = self.read_u32();
-            let new_handle = self.read_u32();
-            let msg = self.read_msg(len);
+            self.msgs.insert(handle, None);
+            self.await_messages();
 
-            if handle == new_handle {
+            if let Some(msg) = self.msgs.remove(&handle).unwrap() {
                 break msg;
             }
-            self.handle_callback(&msg, new_handle);
         };
 
         if let Ok(res) = dxr::deserialize_xml::<FaultResponse>(&msg) {
@@ -96,11 +97,19 @@ impl Client {
         Ok(R::try_from_value(&res.inner()).unwrap())
     }
 
-    pub fn wait_for_callbacks(&mut self) {
+    /// this will wait for callbacks or response for one of `self.msgs`
+    pub fn await_messages(&mut self) {
         loop {
             let len = self.read_u32();
             let handle = self.read_u32();
             let msg = self.read_msg(len);
+
+            // were we expecting a response for this handle?
+            if self.msgs.remove(&handle).is_some() {
+                self.msgs.insert(handle, Some(msg));
+                return;
+            }
+
             self.handle_callback(&msg, handle);
         }
     }
@@ -110,6 +119,7 @@ impl Client {
 
         if call.name() == "ManiaPlanet.BeginMap" {
             let random_id = self.random_map_id().unwrap();
+            println!("downloading map {random_id}");
             self.download_map(random_id);
         }
 
@@ -160,7 +170,7 @@ impl Client {
 }
 
 fn main() {
-    let arg: Vec<String> = std::env::args().collect();
+    // let arg: Vec<String> = std::env::args().collect();
 
     let mut client = Client::new();
 
@@ -170,8 +180,8 @@ fn main() {
     //     let random_id = client.random_map_id().unwrap();
     //     client.download_map(random_id);
     // }
-    // client.call::<bool>("NextMap", ()).unwrap();
-    client.wait_for_callbacks();
+    client.call::<bool>("NextMap", ()).unwrap();
+    client.await_messages();
 }
 
 #[allow(non_snake_case, dead_code)]
