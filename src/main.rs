@@ -36,6 +36,9 @@ impl Client {
             .unwrap();
         assert!(suc);
 
+        let suc: bool = client.call("EnableCallbacks", [true]).unwrap();
+        assert!(suc);
+
         client
     }
 
@@ -74,16 +77,43 @@ impl Client {
         self.write_u32(handle);
         self.client.write_all(msg.as_bytes()).unwrap();
 
-        let len = self.read_u32();
-        let new_handle = self.read_u32();
-        assert_eq!(handle, new_handle);
-        let msg = self.read_msg(len);
+        let msg = loop {
+            let len = self.read_u32();
+            let new_handle = self.read_u32();
+            let msg = self.read_msg(len);
+
+            if handle == new_handle {
+                break msg;
+            }
+            self.handle_callback(&msg, new_handle);
+        };
+
         if let Ok(res) = dxr::deserialize_xml::<FaultResponse>(&msg) {
             let fault = Fault::try_from(res).unwrap();
             return Err(fault);
         }
         let res: MethodResponse = dxr::deserialize_xml(&msg).unwrap();
         Ok(R::try_from_value(&res.inner()).unwrap())
+    }
+
+    pub fn wait_for_callbacks(&mut self) {
+        loop {
+            let len = self.read_u32();
+            let handle = self.read_u32();
+            let msg = self.read_msg(len);
+            self.handle_callback(&msg, handle);
+        }
+    }
+
+    pub fn handle_callback(&mut self, msg: &str, _handle: u32) {
+        let call: MethodCall = dxr::deserialize_xml(msg).unwrap();
+
+        if call.name() == "ManiaPlanet.BeginMap" {
+            let random_id = self.random_map_id().unwrap();
+            self.download_map(random_id);
+        }
+
+        // println!("{call:?}")
     }
 
     fn random_map_id(&mut self) -> color_eyre::Result<u64> {
@@ -136,11 +166,12 @@ fn main() {
 
     // client.download_map(&arg[1]);
 
-    for _ in 0..20 {
-        let random_id = client.random_map_id().unwrap();
-        client.download_map(random_id);
-    }
+    // for _ in 0..20 {
+    //     let random_id = client.random_map_id().unwrap();
+    //     client.download_map(random_id);
+    // }
     // client.call::<bool>("NextMap", ()).unwrap();
+    client.wait_for_callbacks();
 }
 
 #[allow(non_snake_case, dead_code)]
