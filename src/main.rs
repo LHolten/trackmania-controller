@@ -5,10 +5,12 @@ use std::{
 };
 
 use dxr::{Fault, FaultResponse, MethodCall, MethodResponse, TryFromValue};
-use rand::random;
+
+use color_eyre::eyre::ContextCompat;
 
 struct Client {
     client: TcpStream,
+    exchange: reqwest::blocking::Client,
     handle: u32,
 }
 
@@ -16,6 +18,11 @@ impl Client {
     pub fn new() -> Self {
         let mut client = Client {
             client: TcpStream::connect("localhost:5000").unwrap(),
+            // trackmania.exchange does not like it if we don't give a user_agent
+            exchange: reqwest::blocking::Client::builder()
+                .user_agent("hytak-server-util")
+                .build()
+                .unwrap(),
             handle: 0x80000000,
         };
         let len = client.read_u32();
@@ -79,17 +86,33 @@ impl Client {
         Ok(R::try_from_value(&res.inner()).unwrap())
     }
 
-    fn download_map(&mut self, id: &str) {
+    fn random_map_id(&mut self) -> color_eyre::Result<u64> {
+        let res = self
+            .exchange
+            .get("http://trackmania.exchange/mapsearch2/search?api=on&random=1&etags=23,37,40&mtype=TM_Race")
+            .send()?;
+
+        let val: serde_json::Value = serde_json::from_str(&res.text()?)?;
+        let id = val
+            .get("results")
+            .context("no results")?
+            .get(0)
+            .context("no results")?
+            .get("TrackID")
+            .context("no track id")?
+            .as_u64()
+            .context("not a number")?;
+
+        Ok(id)
+    }
+
+    fn download_map(&mut self, id: u64) {
         let dir: String = self.call("GetMapsDirectory", ()).unwrap();
 
         if let Ok(mut file) = File::create_new(format!("{dir}{id}.Map.Gbx")) {
             let url = format!("https://trackmania.exchange/maps/download/{id}");
-            // trackmania.exchange does not like it if we don't give a user_agent
-            let req = reqwest::blocking::Client::builder()
-                .user_agent("hytak-server-util")
-                .build()
-                .unwrap();
-            req.get(url).send().unwrap().copy_to(&mut file).unwrap();
+            let req = self.exchange.get(url);
+            req.send().unwrap().copy_to(&mut file).unwrap();
         } else {
             println!("map is already downloaded")
         }
@@ -107,15 +130,15 @@ impl Client {
 }
 
 fn main() {
-    // let arg: Vec<String> = std::env::args().collect();
+    let arg: Vec<String> = std::env::args().collect();
 
     let mut client = Client::new();
 
     // client.download_map(&arg[1]);
 
     for _ in 0..20 {
-        let id = random::<u32>() % 100000;
-        client.download_map(&format!("{id}"));
+        let random_id = client.random_map_id().unwrap();
+        client.download_map(random_id);
     }
     // client.call::<bool>("NextMap", ()).unwrap();
 }
